@@ -36,7 +36,17 @@ class GithubTool:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, params=params)
                 response.raise_for_status()
-                return response.json()
+                prs = response.json()
+                filtered = []
+                for pr in prs:
+                    filtered.append({
+                        "number": pr.get("number"),
+                        "title": pr.get("title"),
+                        "state": pr.get("state"),
+                        "user": {"login": pr.get("user", {}).get("login")} if pr.get("user") else None,
+                        "html_url": pr.get("html_url")
+                    })
+                return filtered
         except Exception as e:
             print(f"GitHub API call to {url} failed: {e}. Returning fallback mock data.")
             # Fallback to realistic database-aligned mock data
@@ -125,17 +135,24 @@ class GithubTool:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
-                return response.json()
+                res_data = response.json()
+                if isinstance(res_data, dict) and res_data.get("encoding") == "base64" and "content" in res_data:
+                    import base64
+                    try:
+                        b64_str = "".join(res_data["content"].split())
+                        res_data["content"] = base64.b64decode(b64_str).decode("utf-8", errors="replace")
+                        res_data["encoding"] = "utf-8"
+                    except Exception as ex:
+                        print(f"Failed to decode base64 content: {ex}")
+                return res_data
         except Exception as e:
             print(f"GitHub API call to {url} failed: {e}. Returning fallback mock data.")
-            import base64
             content_str = f"Mock file content for '{payload.file_path}' in {payload.owner_name}/{payload.repo_name}."
-            encoded_content = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
             return {
                 "name": os.path.basename(payload.file_path),
                 "path": payload.file_path,
-                "content": encoded_content,
-                "encoding": "base64",
+                "content": content_str,
+                "encoding": "utf-8",
                 "size": len(content_str)
             }
 

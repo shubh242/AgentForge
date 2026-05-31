@@ -1,0 +1,142 @@
+[
+  {
+    "id": "scenario_1",
+    "task": "Verify connection",
+    "expected_tools": ["rag_search", "postgres_query"],
+    "expected_keywords": [],
+    "category": "misc"
+  },
+  {
+    "id": "scenario_2",
+    "task": "Show me the users table schema",
+    "expected_tools": ["rag_search", "postgres_query"],
+    "expected_keywords": ["users", "email"],
+    "category": "db_only"
+  },
+  {
+    "id": "scenario_3",
+    "task": "Show me the file contents of README.md",
+    "expected_tools": ["rag_search", "get_file_contents"],
+    "expected_keywords": ["README.md"],
+    "category": "github_only"
+  },
+  {
+    "id": "scenario_4",
+    "task": "Summarize open PRs for owner samuelcolvin and FastAPI Repository",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["pydantic", "fastapi"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_5",
+    "task": "List open PRs for pydantic/pydantic",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["pydantic"],
+    "category": "github_only"
+  },
+  {
+    "id": "scenario_6",
+    "task": "Identify open PRs for Samuel Colvin",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["pydantic"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_7",
+    "task": "Find lead developer of FastAPI and list open PRs",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["fastapi", "tiangolo"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_8",
+    "task": "Summarize open PRs touching the users table",
+    "expected_tools": ["rag_search", "postgres_query", "list_open_prs"],
+    "expected_keywords": ["clinicops-copilot", "constraints"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_9",
+    "task": "Check documentation for database guide",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["database", "schema"],
+    "category": "rag_only"
+  },
+  {
+    "id": "scenario_10",
+    "task": "Find project developer configurations for active repositories",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["ownership", "developer"],
+    "category": "rag_only"
+  },
+  {
+    "id": "scenario_11",
+    "task": "Triage open PRs for Hanh Nguyen's project TrackerApp",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["TrackerApp", "Hanhnguyen21-sys"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_12",
+    "task": "List open PRs for Parth Gala's dropshipping alien",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["dropshipping_alien", "ParthGala2k"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_13",
+    "task": "List open PRs for vichcraft's project ccas",
+    "expected_tools": ["rag_search", "list_open_prs"],
+    "expected_keywords": ["ccas", "vichcraft"],
+    "category": "multi_step"
+  },
+  {
+    "id": "scenario_14",
+    "task": "Search docs for FastAPI owner details",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["fastapi", "tiangolo"],
+    "category": "rag_only"
+  },
+  {
+    "id": "scenario_15",
+    "task": "Look up database guide details for users table",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["users", "table"],
+    "category": "rag_only"
+  },
+  {
+    "id": "scenario_16",
+    "task": "Show database schema of pull_requests table",
+    "expected_tools": ["rag_search", "postgres_query"],
+    "expected_keywords": ["pull_requests", "repo"],
+    "category": "db_only"
+  },
+  {
+    "id": "scenario_17",
+    "task": "Check active developer email for pydantic lead",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["samuel@pydantic.dev"],
+    "category": "rag_only"
+  },
+  {
+    "id": "scenario_18",
+    "task": "Query SQLite database for pull request count",
+    "expected_tools": ["rag_search", "postgres_query"],
+    "expected_keywords": ["row_count"],
+    "category": "db_only"
+  },
+  {
+    "id": "scenario_19",
+    "task": "Show content of projects_metadata.md",
+    "expected_tools": ["rag_search", "get_file_contents"],
+    "expected_keywords": ["projects_metadata.md"],
+    "category": "github_only"
+  },
+  {
+    "id": "scenario_20",
+    "task": "Find description of dropshipping alien repo",
+    "expected_tools": ["rag_search"],
+    "expected_keywords": ["dropshipping_alien"],
+    "category": "rag_only"
+  }
+]

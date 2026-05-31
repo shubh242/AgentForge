@@ -12,6 +12,8 @@ dependencies = [
   "pytest",
   "httpx",
   "qdrant-client",
+  "groq",
+  "openai",
 ]
 
 [tool.pytest.ini_options]
