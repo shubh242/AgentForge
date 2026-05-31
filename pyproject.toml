@@ -1,0 +1,17 @@
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "AgentForge MCP server for tool-calling agents"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "pydantic-settings",
+  "python-dotenv",
+  "pytest",
+  "httpx",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
