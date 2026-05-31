@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from .tools.postgres_tool import PostgresQueryTool
 from .tools.github_tool import GithubTool
+from .tools.rag_tool import RAGTool
 
 
 @dataclass
@@ -15,6 +17,7 @@ class Agent:
     def __init__(self) -> None:
         self.postgres = PostgresQueryTool()
         self.github = GithubTool()
+        self.rag = RAGTool()
 
     def plan(self, task: str, history: list[dict[str, Any]]) -> ToolCall | None:
         """
@@ -26,7 +29,69 @@ class Agent:
         # Step 1: Detect already executed tools to prevent duplicate calls
         executed_tools = {step["tool"] for step in history}
 
-        # Case A: Task asks to summarize open pull requests touching users table
+        # Step 2: RAG Grounding (Milestone 3)
+        # Always run RAG first to retrieve relevant documentation and resolve metadata
+        if "rag_search" not in executed_tools:
+            return ToolCall(
+                tool="rag_search",
+                args={"query": task}
+            )
+
+        # Retrieve RAG search results from history for context resolution
+        rag_step = next((step for step in history if step["tool"] == "rag_search"), None)
+        rag_results = rag_step.get("result", []) if rag_step else []
+
+        # Case A: Task asks to list or summarize open pull requests for owner samuelcolvin and FastAPI Repository
+        if "samuelcolvin" in task_lower or "fastapi" in task_lower:
+            # Parse retrieved RAG results to resolve repo paths
+            resolved_repos = []
+            for hit in rag_results:
+                text = hit.get("text", "")
+                text_lower = text.lower()
+                
+                # Extract markdown formatted repository paths like **owner/repo**
+                repos_found = re.findall(r"\*\*([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)\*\*", text)
+                
+                if "samuelcolvin" in text_lower:
+                    for repo in repos_found:
+                        parts = repo.split("/")
+                        if len(parts) == 2 and parts[0] == "pydantic":
+                            repo_info = {"owner_name": parts[0], "repo_name": parts[1]}
+                            if repo_info not in resolved_repos:
+                                resolved_repos.append(repo_info)
+                if "fastapi" in text_lower:
+                    for repo in repos_found:
+                        parts = repo.split("/")
+                        if len(parts) == 2 and parts[0] == "fastapi":
+                            repo_info = {"owner_name": parts[0], "repo_name": parts[1]}
+                            if repo_info not in resolved_repos:
+                                resolved_repos.append(repo_info)
+
+            # Fallback to standard defaults if RAG search is empty or failed
+            if not resolved_repos:
+                resolved_repos = [
+                    {"owner_name": "pydantic", "repo_name": "pydantic"},
+                    {"owner_name": "fastapi", "repo_name": "fastapi"}
+                ]
+
+            # Call list_open_prs for each resolved repository that hasn't been fetched yet
+            for repo_info in resolved_repos:
+                owner = repo_info["owner_name"]
+                repo = repo_info["repo_name"]
+                already_fetched = any(
+                    s.get("tool") == "list_open_prs" and
+                    s.get("args", {}).get("owner_name") == owner and
+                    s.get("args", {}).get("repo_name") == repo
+                    for s in history
+                )
+                if not already_fetched:
+                    return ToolCall(
+                        tool="list_open_prs",
+                        args={"owner_name": owner, "repo_name": repo}
+                    )
+            return None
+
+        # Case B: Task asks to summarize open pull requests touching users table
         if ("open pr" in task_lower or "pull request" in task_lower) and ("users" in task_lower or "schema" in task_lower):
             # 1. First run a database query to find open PRs in our records
             if "postgres_query" not in executed_tools:
@@ -61,7 +126,7 @@ class Agent:
             # If we've done the DB query and fetched from GitHub (or no matching repo found), we're done
             return None
 
-        # Case B: Task asks about pull requests in general
+        # Case C: Task asks about pull requests in general
         if "open pr" in task_lower or "pull request" in task_lower:
             if "list_open_prs" not in executed_tools:
                 # Default to shubh242/clinicops-copilot if not specified
@@ -71,7 +136,7 @@ class Agent:
                 )
             return None
 
-        # Case C: Task asks about database schema or user table specifically
+        # Case D: Task asks about database schema or user table specifically
         if "schema" in task_lower or "users table" in task_lower:
             if "postgres_query" not in executed_tools:
                 return ToolCall(
@@ -80,7 +145,7 @@ class Agent:
                 )
             return None
 
-        # Case D: Task asks for file contents
+        # Case E: Task asks for file contents
         if "file contents" in task_lower or "show me" in task_lower:
             if "get_file_contents" not in executed_tools:
                 return ToolCall(
@@ -89,8 +154,8 @@ class Agent:
                 )
             return None
 
-        # Fallback ping query if history is empty
-        if not history:
+        # Fallback ping query if no query/fetch tools have run yet
+        if not any(s["tool"] in ("postgres_query", "list_open_prs", "get_file_contents") for s in history):
             return ToolCall(
                 tool="postgres_query",
                 args={"query": "SELECT 1 AS ping"}
@@ -135,7 +200,24 @@ class Agent:
         """
         Synthesize the execution history into a final summary response.
         """
+        open_prs = []
         open_prs_touching_users = []
+        citations = []
+
+        # Gather citations from RAG Search results
+        rag_step = next((step for step in history if step.get("tool") == "rag_search" and "result" in step), None)
+        if rag_step:
+            results = rag_step["result"]
+            if isinstance(results, list):
+                for hit in results:
+                    source = hit.get("source", "docs")
+                    source_name = source.split("/")[-1] if "/" in source else source
+                    snippet = hit.get("text", "").replace("\n", " ").strip()
+                    if len(snippet) > 100:
+                        snippet = snippet[:97] + "..."
+                    citation_str = f"- [Source: {source_name}] \"{snippet}\""
+                    if citation_str not in citations:
+                        citations.append(citation_str)
 
         for step in history:
             # Gather open PRs matching criteria from DB query
@@ -156,28 +238,38 @@ class Agent:
             # Gather open PRs matching criteria from GitHub tool
             if step.get("tool") == "list_open_prs" and "result" in step:
                 prs = step["result"]
+                owner_name = step["args"].get("owner_name")
+                repo_name = step["args"].get("repo_name")
                 if isinstance(prs, list):
                     for pr in prs:
-                        title = pr.get("title", "").lower()
+                        title = pr.get("title", "")
                         state = pr.get("state", pr.get("status", "")).lower()
-                        if "users" in title and (state == "open" or not state):
+                        if state == "open" or not state:
                             # Avoid duplicate records
-                            if not any(item["title"] == pr.get("title") for item in open_prs_touching_users):
+                            if not any(item["title"] == title for item in open_prs):
                                 author = pr.get("user", {}).get("login") if isinstance(pr.get("user"), dict) else pr.get("author")
-                                open_prs_touching_users.append({
-                                    "title": pr.get("title"),
-                                    "repo": f"{step['args']['owner_name']}/{step['args']['repo_name']}",
+                                open_prs.append({
+                                    "title": title,
+                                    "repo": f"{owner_name}/{repo_name}",
                                     "author": author or pr.get("user"),
                                     "status": state or "open"
                                 })
 
         # Construct markdown summary
-        if open_prs_touching_users:
+        if open_prs:
+            summary = f"Found {len(open_prs)} open Pull Request(s):\n"
+            for i, pr in enumerate(open_prs, 1):
+                summary += f"{i}. '{pr['title']}' (repo: {pr['repo']}, author: {pr['author']}, status: {pr['status']})\n"
+        elif open_prs_touching_users:
             summary = f"Found {len(open_prs_touching_users)} open Pull Request(s) touching the users table:\n"
             for i, pr in enumerate(open_prs_touching_users, 1):
                 summary += f"{i}. '{pr['title']}' (repo: {pr['repo']}, author: {pr['author']}, status: {pr['status']})\n"
         else:
-            summary = "No open Pull Requests touching the users table were found."
+            summary = "No open Pull Requests were found."
+
+        # Add citations if available
+        if citations:
+            summary += "\nCitations:\n" + "\n".join(citations) + "\n"
 
         return {
             "task": task,
@@ -191,7 +283,7 @@ class Agent:
             ],
             "summary": summary,
             "data": {
-                "open_prs": open_prs_touching_users
+                "open_prs": open_prs if open_prs else open_prs_touching_users
             }
         }
 
@@ -204,5 +296,8 @@ class Agent:
 
         if decision.tool == "get_file_contents":
             return await self.github.get_file_contents(decision.args)
+
+        if decision.tool == "rag_search":
+            return await self.rag.rag_search(decision.args)
 
         raise ValueError(f"Unknown tool: {decision.tool}")

@@ -11,6 +11,7 @@ dependencies = [
   "python-dotenv",
   "pytest",
   "httpx",
+  "qdrant-client",
 ]
 
 [tool.pytest.ini_options]
