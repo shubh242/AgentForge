@@ -47,7 +47,7 @@ class Agent:
                 "type": "function",
                 "function": {
                     "name": "postgres_query",
-                    "description": "Execute a read-only SELECT SQL query on the database. Tables: 'users' (id, name, email, created_at), 'pull_requests' (id, repo, title, author, status, created_at).",
+                    "description": "Execute a read-only SELECT SQL query on the database. Tables: 'users' (id, name, email, created_at), 'pull_requests' (id, repo, title, author, status, created_at). Note that the 'repo' column contains the full 'owner/repo' path (e.g. 'shubh242/clinicops-copilot').",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -240,6 +240,7 @@ class Agent:
                     "data": {}
                 }
 
+            seen_calls_this_turn = set()
             for tool_call in message.tool_calls:
                 tool_name = tool_call.function.name
                 try:
@@ -255,14 +256,62 @@ class Agent:
                         except (ValueError, TypeError):
                             tool_args["limit"] = 2
 
-                print(f"Step {len(steps_executed) + 1}: Planning to call tool '{tool_name}' with args {tool_args}")
-                
+                # Deduplicate within the same response turn
                 try:
-                    result = await self.call_tool(ToolCall(tool=tool_name, args=tool_args))
-                    status = "success"
-                except Exception as e:
-                    result = {"error": str(e)}
+                    norm_args = json.dumps(tool_args, sort_keys=True)
+                except Exception:
+                    norm_args = str(tool_args)
+                sig = (tool_name, norm_args)
+                
+                if sig in seen_calls_this_turn:
+                    # Skip duplicate tool calls in the same turn
+                    print(f"Skipping duplicate tool call in the same turn: {tool_name} with {tool_args}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_name,
+                        "content": json.dumps({"error": "Duplicate tool call in the same turn. Result omitted."})
+                    })
+                    continue
+                seen_calls_this_turn.add(sig)
+
+                # Check if this tool call has been executed in a previous turn
+                prev_match = None
+                occurrences = 0
+                for prev in steps_executed:
+                    try:
+                        prev_norm = json.dumps(prev["args"], sort_keys=True)
+                    except Exception:
+                        prev_norm = str(prev["args"])
+                    if prev["tool"] == tool_name and prev_norm == norm_args:
+                        prev_match = prev
+                        occurrences += 1
+
+                if occurrences >= 2:
+                    # If called more than twice, intercept with an explicit warning/guidance to the model
+                    print(f"Intercepting repeated tool call to prevent infinite loop: {tool_name} with {tool_args}")
+                    result = {
+                        "error": (
+                            f"You have already called '{tool_name}' with these arguments {tool_args} {occurrences} times. "
+                            "It has returned the same result. Please do not call it again. "
+                            "Verify if you are using the correct repository coordinates (e.g. 'shubh242/clinicops-copilot' instead of 'clinicops-copilot'), "
+                            "or check the documentation/schemas using 'rag_search'."
+                        )
+                    }
                     status = "error"
+                elif prev_match is not None:
+                    # Reuse cached result to avoid redundant network/database execution
+                    print(f"Reusing cached result for tool call: {tool_name} with {tool_args}")
+                    result = prev_match["result"]
+                    status = prev_match["status"]
+                else:
+                    print(f"Step {len(steps_executed) + 1}: Planning to call tool '{tool_name}' with args {tool_args}")
+                    try:
+                        result = await self.call_tool(ToolCall(tool=tool_name, args=tool_args))
+                        status = "success"
+                    except Exception as e:
+                        result = {"error": str(e)}
+                        status = "error"
 
                 steps_executed.append({
                     "tool": tool_name,

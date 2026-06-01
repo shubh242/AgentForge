@@ -35,8 +35,10 @@ class PostgresQueryArgs(BaseModel):
         if not normalized.startswith("select"):
             raise ValueError("Only SELECT queries are allowed.")
 
+        import re
         for keyword in FORBIDDEN_SQL_KEYWORDS:
-            if keyword in normalized and not normalized.startswith(keyword):
+            pattern = rf"\b{re.escape(keyword)}\b"
+            if re.search(pattern, normalized):
                 raise ValueError(f"Forbidden SQL keyword in query: {keyword}")
 
         return value
