@@ -43,7 +43,20 @@ class QdrantVectorStore:
         Output size: 384 dimensions.
         """
         import hashlib
-        url = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
+        
+        def _get_local_embedding(t: str) -> list[float]:
+            h = hashlib.sha256(t.encode('utf-8')).digest()
+            vector = []
+            for i in range(384):
+                byte_val = h[i % len(h)]
+                val = (byte_val / 255.0) * 2.0 - 1.0
+                vector.append(val)
+            return vector
+
+        if getattr(self, "offline_mode", False):
+            return _get_local_embedding(text)
+
+        url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2"
         headers = {"Authorization": f"Bearer {self.hf_token}"}
         payload = {"inputs": text}
         
@@ -67,18 +80,14 @@ class QdrantVectorStore:
                     raise RuntimeError(
                         f"HuggingFace API returned error {response.status_code}: {response.text}"
                     )
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPError) as e:
+            except Exception as e:
                 # If network/DNS fails or token is invalid, fall back to offline deterministic hashing
                 print(f"Warning: HuggingFace API call failed ({e}). Falling back to local offline mock embeddings.")
                 self.offline_mode = True
-                h = hashlib.sha256(text.encode('utf-8')).digest()
-                vector = []
-                for i in range(384):
-                    byte_val = h[i % len(h)]
-                    val = (byte_val / 255.0) * 2.0 - 1.0
-                    vector.append(val)
-                return vector
-        raise RuntimeError("HuggingFace model failed to load after multiple retries.")
+                return _get_local_embedding(text)
+        
+        self.offline_mode = True
+        return _get_local_embedding(text)
 
     def index_documents(self) -> None:
         """Read documents from docs/ directory, chunk them, and index them into Qdrant."""

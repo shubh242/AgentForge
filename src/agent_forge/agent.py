@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import re
 import os
+import json
 import sys
 from typing import Any
 from dotenv import load_dotenv
@@ -26,167 +27,19 @@ class Agent:
 
         self.groq_api_key = os.environ.get("GROQ_API_KEY")
         self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+        self.use_llm = use_llm
 
-        is_testing = "pytest" in sys.modules
-
-        if is_testing or not (self.groq_api_key or self.openai_api_key):
-            self.use_llm = False
+        if self.groq_api_key:
+            from groq import Groq
+            self.llm_client = Groq(api_key=self.groq_api_key)
+            self.model = "llama-3.1-8b-instant"
+        elif self.openai_api_key:
+            from openai import OpenAI
+            self.llm_client = OpenAI(api_key=self.openai_api_key)
+            self.model = "gpt-4o-mini"
         else:
-            self.use_llm = use_llm
-
-        if self.use_llm:
-            if self.groq_api_key:
-                from groq import Groq
-                self.llm_client = Groq(api_key=self.groq_api_key)
-                self.model = "llama-3.1-8b-instant"
-            elif self.openai_api_key:
-                from openai import OpenAI
-                self.llm_client = OpenAI(api_key=self.openai_api_key)
-                self.model = "gpt-4o-mini"
-
-    def plan(self, task: str, history: list[dict[str, Any]]) -> ToolCall | None:
-        """
-        Stateful planner that makes a decision based on the task and execution history.
-        This rule-based planner supports multi-step orchestrations for Milestone 2.
-        """
-        task_lower = task.lower()
-
-        # Step 1: Detect already executed tools to prevent duplicate calls
-        executed_tools = {step["tool"] for step in history}
-
-        # Step 2: RAG Grounding (Milestone 3)
-        # Always run RAG first to retrieve relevant documentation and resolve metadata
-        if "rag_search" not in executed_tools:
-            return ToolCall(
-                tool="rag_search",
-                args={"query": task}
-            )
-
-        # Retrieve RAG search results from history for context resolution
-        rag_step = next((step for step in history if step["tool"] == "rag_search"), None)
-        rag_results = rag_step.get("result", []) if rag_step else []
-
-        # Case A: Task asks to list or summarize open pull requests for owner samuelcolvin and FastAPI Repository
-        if "samuelcolvin" in task_lower or "fastapi" in task_lower:
-            # Parse retrieved RAG results to resolve repo paths
-            resolved_repos = []
-            for hit in rag_results:
-                text = hit.get("text", "")
-                text_lower = text.lower()
-                
-                # Extract markdown formatted repository paths like **owner/repo**
-                repos_found = re.findall(r"\*\*([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)\*\*", text)
-                
-                if "samuelcolvin" in text_lower:
-                    for repo in repos_found:
-                        parts = repo.split("/")
-                        if len(parts) == 2 and parts[0] == "pydantic":
-                            repo_info = {"owner_name": parts[0], "repo_name": parts[1]}
-                            if repo_info not in resolved_repos:
-                                resolved_repos.append(repo_info)
-                if "fastapi" in text_lower:
-                    for repo in repos_found:
-                        parts = repo.split("/")
-                        if len(parts) == 2 and parts[0] == "fastapi":
-                            repo_info = {"owner_name": parts[0], "repo_name": parts[1]}
-                            if repo_info not in resolved_repos:
-                                resolved_repos.append(repo_info)
-
-            # Fallback to standard defaults if RAG search is empty or failed
-            if not resolved_repos:
-                resolved_repos = [
-                    {"owner_name": "pydantic", "repo_name": "pydantic"},
-                    {"owner_name": "fastapi", "repo_name": "fastapi"}
-                ]
-
-            # Call list_open_prs for each resolved repository that hasn't been fetched yet
-            for repo_info in resolved_repos:
-                owner = repo_info["owner_name"]
-                repo = repo_info["repo_name"]
-                already_fetched = any(
-                    s.get("tool") == "list_open_prs" and
-                    s.get("args", {}).get("owner_name") == owner and
-                    s.get("args", {}).get("repo_name") == repo
-                    for s in history
-                )
-                if not already_fetched:
-                    return ToolCall(
-                        tool="list_open_prs",
-                        args={"owner_name": owner, "repo_name": repo}
-                    )
-            return None
-
-        # Case B: Task asks to summarize open pull requests touching users table
-        if ("open pr" in task_lower or "pull request" in task_lower) and ("users" in task_lower or "schema" in task_lower):
-            # 1. First run a database query to find open PRs in our records
-            if "postgres_query" not in executed_tools:
-                return ToolCall(
-                    tool="postgres_query",
-                    args={"query": "SELECT * FROM pull_requests WHERE status = 'open'"}
-                )
-
-            # 2. Inspect the database result to find which repository has PRs touching the users table
-            pg_result = next((step["result"] for step in history if step.get("tool") == "postgres_query" and "result" in step), None)
-            if pg_result and "rows" in pg_result:
-                for row in pg_result["rows"]:
-                    title = row.get("title", "").lower()
-                    repo = row.get("repo", "").lower()
-                    if "users" in title or "users" in repo:
-                        parts = row["repo"].split("/")
-                        if len(parts) == 2:
-                            owner_name, repo_name = parts
-                            # Check if we already fetched PR details from GitHub for this repo
-                            already_fetched = any(
-                                s.get("tool") == "list_open_prs" and
-                                s.get("args", {}).get("owner_name") == owner_name and
-                                s.get("args", {}).get("repo_name") == repo_name
-                                for s in history
-                            )
-                            if not already_fetched:
-                                return ToolCall(
-                                    tool="list_open_prs",
-                                    args={"owner_name": owner_name, "repo_name": repo_name}
-                                )
-
-            # If we've done the DB query and fetched from GitHub (or no matching repo found), we're done
-            return None
-
-        # Case C: Task asks about pull requests in general
-        if "open pr" in task_lower or "pull request" in task_lower:
-            if "list_open_prs" not in executed_tools:
-                # Default to shubh242/clinicops-copilot if not specified
-                return ToolCall(
-                    tool="list_open_prs",
-                    args={"owner_name": "shubh242", "repo_name": "clinicops-copilot"}
-                )
-            return None
-
-        # Case D: Task asks about database schema or user table specifically
-        if "schema" in task_lower or "users table" in task_lower:
-            if "postgres_query" not in executed_tools:
-                return ToolCall(
-                    tool="postgres_query",
-                    args={"query": "SELECT name, email FROM users LIMIT 10"}
-                )
-            return None
-
-        # Case E: Task asks for file contents
-        if "file contents" in task_lower or "show me" in task_lower:
-            if "get_file_contents" not in executed_tools:
-                return ToolCall(
-                    tool="get_file_contents",
-                    args={"owner_name": "shubh242", "repo_name": "clinicops-copilot", "file_path": "README.md"}
-                )
-            return None
-
-        # Fallback ping query if no query/fetch tools have run yet
-        if not any(s["tool"] in ("postgres_query", "list_open_prs", "get_file_contents") for s in history):
-            return ToolCall(
-                tool="postgres_query",
-                args={"query": "SELECT 1 AS ping"}
-            )
-
-        return None
+            self.llm_client = None
+            self.model = None
 
     def get_tool_definitions(self) -> list[dict]:
         return [
@@ -275,10 +128,10 @@ class Agent:
     async def run(self, task: str) -> dict[str, Any]:
         """
         Execute the planning loop: plan -> pick tool -> call -> observe -> repeat
-        until done. Uses LLM tool calling if enabled, otherwise falls back to rule-based.
+        until done. Uses LLM tool calling.
         """
-        if not self.use_llm:
-            return await self._run_rule_based(task)
+        if not self.llm_client:
+            raise ValueError("No LLM API key provided. AgentForge requires a configured GROQ_API_KEY or OPENAI_API_KEY.")
 
         print(f"The requested task is: {task}")
         history = []
@@ -301,30 +154,73 @@ class Agent:
         steps_executed = []
 
         for step in range(max_steps):
-            try:
-                response = self.llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=self.get_tool_definitions(),
-                    tool_choice="auto",
-                    temperature=0.0
-                )
-                if getattr(response, "usage", None):
-                    total_prompt_tokens += getattr(response.usage, "prompt_tokens", 0)
-                    total_completion_tokens += getattr(response.usage, "completion_tokens", 0)
-            except Exception as e:
-                print(f"LLM call failed: {e}")
+            import time
+            import re
+            
+            response = None
+            max_retries = 5
+            for retry_attempt in range(max_retries):
+                try:
+                    response = self.llm_client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=self.get_tool_definitions(),
+                        tool_choice="auto",
+                        temperature=0.0
+                    )
+                    break
+                except Exception as e:
+                    err_msg = str(e)
+                    is_rate_limit = False
+                    
+                    if hasattr(e, "status_code") and e.status_code == 429:
+                        is_rate_limit = True
+                    elif "429" in err_msg or "rate limit" in err_msg.lower() or "tpm" in err_msg.lower():
+                        is_rate_limit = True
+                        
+                    if is_rate_limit and retry_attempt < max_retries - 1:
+                        wait_seconds = 2.0
+                        match = re.search(r"try again in (\d+(?:\.\d+)?)s", err_msg)
+                        if match:
+                            try:
+                                wait_seconds = float(match.group(1)) + 0.5
+                            except ValueError:
+                                pass
+                        else:
+                            wait_seconds = 2.0 ** (retry_attempt + 1)
+                            
+                        print(f"Rate limit hit (429). Retrying in {wait_seconds:.2f} seconds... (Attempt {retry_attempt + 1}/{max_retries})")
+                        time.sleep(wait_seconds)
+                    else:
+                        print(f"LLM call failed: {e}")
+                        return {
+                            "task": task,
+                            "steps_executed": steps_executed,
+                            "summary": f"Failed to complete task due to LLM error: {e}",
+                            "usage": {
+                                "prompt_tokens": total_prompt_tokens,
+                                "completion_tokens": total_completion_tokens,
+                                "total_tokens": total_prompt_tokens + total_completion_tokens
+                            },
+                            "data": {"error": str(e)}
+                        }
+
+            if response is None:
                 return {
                     "task": task,
                     "steps_executed": steps_executed,
-                    "summary": f"Failed to complete task due to LLM error: {e}",
+                    "summary": "Failed to complete task: LLM did not return a response after multiple retries.",
                     "usage": {
                         "prompt_tokens": total_prompt_tokens,
                         "completion_tokens": total_completion_tokens,
                         "total_tokens": total_prompt_tokens + total_completion_tokens
                     },
-                    "data": {"error": str(e)}
+                    "data": {"error": "LLM did not return a response after multiple retries."}
                 }
+
+            if getattr(response, "usage", None):
+                total_prompt_tokens += getattr(response.usage, "prompt_tokens", 0)
+                total_completion_tokens += getattr(response.usage, "completion_tokens", 0)
 
             choice = response.choices[0]
             message = choice.message
@@ -346,7 +242,6 @@ class Agent:
 
             for tool_call in message.tool_calls:
                 tool_name = tool_call.function.name
-                import json
                 try:
                     tool_args = json.loads(tool_call.function.arguments)
                 except Exception:
@@ -393,126 +288,6 @@ class Agent:
                 "total_tokens": total_prompt_tokens + total_completion_tokens
             },
             "data": {}
-        }
-
-    async def _run_rule_based(self, task: str) -> dict[str, Any]:
-        """Original rule-based runner for backwards compatibility and tests."""
-        print(f"The requested task is: {task}")
-        history = []
-        max_steps = 5
-
-        for step in range(max_steps):
-            decision = self.plan(task, history)
-            if decision is None:
-                break
-
-            print(f"Step {step + 1}: Planning to call tool '{decision.tool}' with args {decision.args}")
-            try:
-                result = await self.call_tool(decision)
-                history.append({
-                    "tool": decision.tool,
-                    "args": decision.args,
-                    "result": result
-                })
-            except Exception as e:
-                print(f"Error calling tool '{decision.tool}': {e}")
-                history.append({
-                    "tool": decision.tool,
-                    "args": decision.args,
-                    "error": str(e)
-                })
-
-        return self.synthesize_answer(task, history)
-
-    def synthesize_answer(self, task: str, history: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Synthesize the execution history into a final summary response.
-        """
-        open_prs = []
-        open_prs_touching_users = []
-        citations = []
-
-        # Gather citations from RAG Search results
-        rag_step = next((step for step in history if step.get("tool") == "rag_search" and "result" in step), None)
-        if rag_step:
-            results = rag_step["result"]
-            if isinstance(results, list):
-                for hit in results:
-                    source = hit.get("source", "docs")
-                    source_name = source.split("/")[-1] if "/" in source else source
-                    snippet = hit.get("text", "").replace("\n", " ").strip()
-                    if len(snippet) > 100:
-                        snippet = snippet[:97] + "..."
-                    citation_str = f"- [Source: {source_name}] \"{snippet}\""
-                    if citation_str not in citations:
-                        citations.append(citation_str)
-
-        for step in history:
-            # Gather open PRs matching criteria from DB query
-            if step.get("tool") == "postgres_query" and "result" in step:
-                rows = step["result"].get("rows", [])
-                for row in rows:
-                    title = row.get("title", "").lower()
-                    repo = row.get("repo", "").lower()
-                    status = row.get("status", "").lower()
-                    if status == "open" and ("users" in title or "users" in repo):
-                        open_prs_touching_users.append({
-                            "title": row.get("title"),
-                            "repo": row.get("repo"),
-                            "author": row.get("author"),
-                            "status": row.get("status")
-                        })
-
-            # Gather open PRs matching criteria from GitHub tool
-            if step.get("tool") == "list_open_prs" and "result" in step:
-                prs = step["result"]
-                owner_name = step["args"].get("owner_name")
-                repo_name = step["args"].get("repo_name")
-                if isinstance(prs, list):
-                    for pr in prs:
-                        title = pr.get("title", "")
-                        state = pr.get("state", pr.get("status", "")).lower()
-                        if state == "open" or not state:
-                            # Avoid duplicate records
-                            if not any(item["title"] == title for item in open_prs):
-                                author = pr.get("user", {}).get("login") if isinstance(pr.get("user"), dict) else pr.get("author")
-                                open_prs.append({
-                                    "title": title,
-                                    "repo": f"{owner_name}/{repo_name}",
-                                    "author": author or pr.get("user"),
-                                    "status": state or "open"
-                                })
-
-        # Construct markdown summary
-        if open_prs:
-            summary = f"Found {len(open_prs)} open Pull Request(s):\n"
-            for i, pr in enumerate(open_prs, 1):
-                summary += f"{i}. '{pr['title']}' (repo: {pr['repo']}, author: {pr['author']}, status: {pr['status']})\n"
-        elif open_prs_touching_users:
-            summary = f"Found {len(open_prs_touching_users)} open Pull Request(s) touching the users table:\n"
-            for i, pr in enumerate(open_prs_touching_users, 1):
-                summary += f"{i}. '{pr['title']}' (repo: {pr['repo']}, author: {pr['author']}, status: {pr['status']})\n"
-        else:
-            summary = "No open Pull Requests were found."
-
-        # Add citations if available
-        if citations:
-            summary += "\nCitations:\n" + "\n".join(citations) + "\n"
-
-        return {
-            "task": task,
-            "steps_executed": [
-                {
-                    "tool": step["tool"],
-                    "args": step["args"],
-                    "status": "success" if "result" in step else "error"
-                }
-                for step in history
-            ],
-            "summary": summary,
-            "data": {
-                "open_prs": open_prs if open_prs else open_prs_touching_users
-            }
         }
 
     async def call_tool(self, decision: ToolCall) -> dict[str, Any]:
